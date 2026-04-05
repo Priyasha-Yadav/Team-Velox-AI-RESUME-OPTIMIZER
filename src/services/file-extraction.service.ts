@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import mammoth from "mammoth";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { extractText } from "unpdf";
 
 const execFileAsync = promisify(execFile);
 
@@ -87,31 +87,15 @@ async function extractWithTextutil(filePath: string): Promise<string> {
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
   try {
-    const loadingTask = pdfjsLib.getDocument({
-      data: new Uint8Array(buffer),
-      useSystemFonts: true,
-      disableFontFace: true,
-      isEvalSupported: false,
-    });
-
-    const pdf = await loadingTask.promise;
-    let fullText = "";
-
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map((item) => ("str" in item ? item.str : ""))
-        .join(" ");
-      fullText += pageText + "\n";
-    }
-
+    const { text } = await extractText(buffer);
+    const fullText = Array.isArray(text) ? text.join("\n") : text;
     const normalized = normalizeExtractedText(fullText);
+
     if (normalized && !looksLikeBinaryPdfPayload(normalized)) {
       return normalized;
     }
   } catch (error) {
-    console.error("PDF.js extraction failed:", error);
+    console.error("unpdf extraction failed:", error);
     // Fall through to platform-specific extraction
   }
 
