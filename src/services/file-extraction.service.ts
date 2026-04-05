@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import mammoth from "mammoth";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -87,29 +87,32 @@ async function extractWithTextutil(filePath: string): Promise<string> {
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
   try {
-    const require = createRequire(import.meta.url);
-    const { PDFParse } = require("pdf-parse") as {
-      PDFParse: new (options: { data: Buffer | Uint8Array }) => {
-        getText: () => Promise<{ text?: string }>;
-        destroy: () => Promise<void>;
-      };
-    };
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      useSystemFonts: true,
+      disableFontFace: true,
+      isEvalSupported: false,
+    });
 
-    let parser: InstanceType<typeof PDFParse> | null = null;
+    const pdf = await loadingTask.promise;
+    let fullText = "";
 
-    try {
-      parser = new PDFParse({ data: buffer });
-      const parsed = await parser.getText();
-      const normalized = normalizeExtractedText(parsed.text ?? "");
-      if (normalized && !looksLikeBinaryPdfPayload(normalized)) {
-        return normalized;
-      }
-    } finally {
-      await parser?.destroy().catch(() => undefined);
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item) => ("str" in item ? item.str : ""))
+        .join(" ");
+      fullText += pageText + "\n";
     }
-  } catch {
-    // Fall through to platform-specific extraction when pdf-parse
-    // cannot initialize in the current runtime (for example missing DOM APIs).
+
+    const normalized = normalizeExtractedText(fullText);
+    if (normalized && !looksLikeBinaryPdfPayload(normalized)) {
+      return normalized;
+    }
+  } catch (error) {
+    console.error("PDF.js extraction failed:", error);
+    // Fall through to platform-specific extraction
   }
 
   if (process.platform === "darwin") {
