@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import mammoth from "mammoth";
-import { extractText } from "unpdf";
 
 const execFileAsync = promisify(execFile);
 
@@ -87,16 +87,29 @@ async function extractWithTextutil(filePath: string): Promise<string> {
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
   try {
-    const { text } = await extractText(buffer);
-    const fullText = Array.isArray(text) ? text.join("\n") : text;
-    const normalized = normalizeExtractedText(fullText);
+    const require = createRequire(import.meta.url);
+    const { PDFParse } = require("pdf-parse") as {
+      PDFParse: new (options: { data: Buffer | Uint8Array }) => {
+        getText: () => Promise<{ text?: string }>;
+        destroy: () => Promise<void>;
+      };
+    };
 
-    if (normalized && !looksLikeBinaryPdfPayload(normalized)) {
-      return normalized;
+    let parser: InstanceType<typeof PDFParse> | null = null;
+
+    try {
+      parser = new PDFParse({ data: buffer });
+      const parsed = await parser.getText();
+      const normalized = normalizeExtractedText(parsed.text ?? "");
+      if (normalized && !looksLikeBinaryPdfPayload(normalized)) {
+        return normalized;
+      }
+    } finally {
+      await parser?.destroy().catch(() => undefined);
     }
-  } catch (error) {
-    console.error("unpdf extraction failed:", error);
-    // Fall through to platform-specific extraction
+  } catch {
+    // Fall through to platform-specific extraction when pdf-parse
+    // cannot initialize in the current runtime (for example missing DOM APIs).
   }
 
   if (process.platform === "darwin") {
